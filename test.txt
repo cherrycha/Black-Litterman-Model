@@ -1,0 +1,150 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import datetime
+import numpy as np
+import cvxopt as opt
+from cvxopt import blas, solvers
+import datetime
+import math
+import ffn
+from scipy import linalg
+
+hszz = pd.read_csv('C:\Users\Administrator\Desktop\data\HS300ZZ500.csv', index_col='DATE')
+gspc = pd.read_csv('C:\Users\Administrator\Desktop\data\GSPC.csv', index_col='Date')
+# 获取 hszz.columns hszz.index
+hszz = hszz[['ZZ500', 'HS300']]
+gspc = gspc[['Close']]
+# 获取第二份数据
+hszz.index = pd.to_datetime(hszz.index)
+gspc.index = pd.to_datetime(gspc.index)
+hszz = hszz.sort_index(ascending=True)
+# 因为标普500用的是周一的数据，那么我们这边减去三天回到周五，与我国数据保持一致
+delta = datetime.timedelta(days=-3)
+square_array = map(lambda i: i + delta, gspc.index.to_pydatetime())
+gspc.index = square_array
+# 需要合并
+invest = pd.merge(hszz, gspc, left_index=True, right_index=True)
+
+
+def toret(close):
+
+
+    lagclose = close.shift(1)
+ret = ((close - lagclose) / lagclose)
+return ret
+zz500 = invest.ZZ500
+hs300 = invest.HS300
+pc500 = invest.Close
+zz500ret = toret(zz500)
+hs300ret = toret(hs300)
+pc500ret = toret(pc500)
+# 集合每一期收益率
+ret = pd.DataFrame({'ZZ500': zz500ret, 'HS300': hs300ret, 'PC500': pc500ret})
+# 去掉NA
+returns = ret.dropna()
+cumreturn = (1 + returns).cumprod()
+cumreturn.plot()
+plt.show()
+
+
+# 根据公式求出期望与方差
+def blacklitterman(returns, tau, P, Q):
+
+
+    mu = returns.mean()
+sigma = returns.cov()
+pi1 = mu
+ts = tau * sigma
+Omega = np.dot(np.dot(P, ts), P.T) * np.eye(Q.shape[0])
+middle = linalg.inv(np.dot(np.dot(P, ts), P.T) + Omega)
+er = np.expand_dims(pi1, axis=0).T + np.dot(np.dot(np.dot(ts, P.T), middle),
+                                            (Q - np.expand_dims(np.dot(P, pi1.T), axis=1)))
+posteriorSigma = sigma + ts - np.dot(ts.dot(P.T).dot(middle).dot(P), ts)
+return [er, posteriorSigma]
+returns = returns[['ZZ500', 'HS300', 'PC500']]
+returns_mean = returns.mean()
+print
+returns_mean
+
+
+def blacklitterman_adjustedReturn(equalReturn, tau, covMat, P, Q):
+
+
+    Omega = tau * (P.dot(covMat).dot(P.transpose()))
+Omega = np.diag(np.diag(Omega, k=0))
+adjustedReturn = equalReturn + tau * covMat.dot(P.transpose()).dot(
+    np.linalg.inv(Omega + tau * (P.dot(covMat).dot(P.transpose())))).dot(Q - P.dot(equalReturn))
+return adjustedReturn
+
+
+def blacklitterman_adjustedVariance(equalReturn, tau, covMat, P):
+
+
+    Omega = tau * (P.dot(covMat).dot(P.transpose()))
+Omega = np.diag(np.diag(Omega, k=0))
+right = (tau) * covMat.dot(P.transpose()).dot(np.linalg.inv(Omega + P.dot(covMat).dot(P.transpose()))).dot(
+    P.dot(tau * covMat))
+right = right.transpose()
+right = right.set_index(equalReturn.index)
+M = tau * covMat - right
+Sigma_p = covMat + M
+return Sigma_p
+
+# 以下就是假设
+p1 = np.array([-1, 1, 0])
+p2 = np.array([0, 1, 0])
+p3 = np.array([0, 1, -1])
+q1 = np.array([0.001])
+q2 = np.array([returns_mean['HS300']])
+q3 = np.array([0.0005])
+p = np.array([p1, p2, p3])
+# q=np.array([q1,q2,q3])
+q = np.array([0.001, returns_mean['ZZ500'] + 0.001, 0.001])
+tau = 0.9
+adjustedReturn = blacklitterman_adjustedReturn(returns_mean, tau, returns.cov(), p, q)
+adjustedVariance = blacklitterman_adjustedVariance(returns_mean, tau, returns.cov(), p)
+print
+adjustedReturn
+print
+adjustedVariance
+
+
+def optimal_portfolio(means, variance):
+
+
+    n = len(means)
+returns = np.asmatrix(means)
+N = 100
+mus = [10 ** (5.0 * t / N - 1.0) for t in range(N)]
+# 转化为cvxopt matrices
+S = opt.matrix(np.asmatrix(variance))
+pbar = opt.matrix(returns).T
+print(S)
+print(pbar)
+# 约束条件
+G = -opt.matrix(np.eye(n))  # opt默认是求最大值，因此要求最小化问题，还得乘以一个负号
+h = opt.matrix(0.0, (n, 1))
+A = opt.matrix(1.0, (1, n))
+b = opt.matrix(1.0)
+# 使用凸优化计算有效前沿
+portfolios = [solvers.qp(mu * S, -pbar, G, h, A, b)['x'] for mu in mus]
+## 计算有效前沿的收益率和风险
+returns = [blas.dot(pbar, x) for x in portfolios]
+risks = [np.sqrt(blas.dot(x, S * x)) for x in portfolios]
+return portfolios, returns, risks
+
+weights, returns, risks = optimal_portfolio(adjustedReturn, adjustedVariance)
+for w in weights:
+    print(w)
+plt.plot(risks, returns, 'y-o')
+for z, x, y in zip(weights, risks, returns):
+    plt.annotate(
+        '(%s)' % map(lambda i: round(i, 2), z),
+        xy=(x, y),
+        xytext=(0, -10),
+        textcoords='offset points',
+        fontsize=5
+
+    )
+
+plt.show()
